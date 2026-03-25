@@ -19,10 +19,10 @@ jobs:
           fetch-depth: 0
 
       - name: Review PR with Claude
+        id: claude-review
         uses: anthropics/claude-code-action@v1
         with:
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
-          display_report: true
           prompt: |
             Review this PR. Focus on:
             - Bugs or logic errors
@@ -31,3 +31,18 @@ jobs:
             - Code clarity and maintainability
 
             Be concise. Only comment where there's something actionable.
+
+            Return your review as a JSON object with:
+            - "summary": a short overall assessment
+            - "issues": an array of objects with "severity" (critical/warning/info), "location" (file and line), and "description"
+          claude_args: '--json-schema {"type":"object","required":["summary","issues"],"properties":{"summary":{"type":"string"},"issues":{"type":"array","items":{"type":"object","required":["severity","location","description"],"properties":{"severity":{"type":"string","enum":["critical","warning","info"]},"location":{"type":"string"},"description":{"type":"string"}}}}}}'
+
+      - name: Post review summary to PR
+        env:
+          GH_TOKEN: ${{ github.token }}
+          STRUCTURED_OUTPUT: ${{ steps.claude-review.outputs.structured_output }}
+        run: |
+          SUMMARY=$(echo "$STRUCTURED_OUTPUT" | jq -r '.summary')
+          ISSUES=$(echo "$STRUCTURED_OUTPUT" | jq -r '.issues[] | "- **\(.severity)** `\(.location)`: \(.description)"')
+          BODY=$(printf "## Claude PR Review\n\n%s\n\n### Issues\n\n%s" "$SUMMARY" "$ISSUES")
+          gh pr comment "${{ github.event.pull_request.number }}" --body "$BODY"
