@@ -183,6 +183,7 @@ document.addEventListener('keydown', e => {
   const key = e.key;
 
   if (gameOver && (key === ' ' || key === 'Enter')) {
+    e.preventDefault();
     messageEl.textContent = '';
     init();
     running = true;
