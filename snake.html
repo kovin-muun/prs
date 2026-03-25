@@ -1,0 +1,218 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Snake Game</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    background: #1a1a2e;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    height: 100vh;
+    font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+    color: #eee;
+    flex-direction: column;
+    gap: 16px;
+  }
+  #header {
+    display: flex;
+    justify-content: space-between;
+    width: 400px;
+    font-size: 18px;
+  }
+  canvas {
+    border: 2px solid #0f3460;
+    border-radius: 4px;
+    background: #16213e;
+  }
+  #message {
+    font-size: 20px;
+    height: 28px;
+    text-align: center;
+  }
+  #controls {
+    font-size: 14px;
+    color: #888;
+  }
+</style>
+</head>
+<body>
+<div id="header">
+  <span>Score: <span id="score">0</span></span>
+  <span>Best: <span id="best">0</span></span>
+</div>
+<canvas id="game" width="400" height="400"></canvas>
+<div id="message">Press any arrow key or WASD to start</div>
+<div id="controls">Arrow keys / WASD to move</div>
+
+<script>
+const canvas = document.getElementById('game');
+const ctx = canvas.getContext('2d');
+const scoreEl = document.getElementById('score');
+const bestEl = document.getElementById('best');
+const messageEl = document.getElementById('message');
+
+const CELL = 20;
+const COLS = canvas.width / CELL;
+const ROWS = canvas.height / CELL;
+const TICK_MS = 100;
+
+let snake, dir, nextDir, food, score, best = 0, running, gameOver;
+
+function init() {
+  const mid = Math.floor(ROWS / 2);
+  snake = [{ x: 5, y: mid }, { x: 4, y: mid }, { x: 3, y: mid }];
+  dir = { x: 1, y: 0 };
+  nextDir = { x: 1, y: 0 };
+  score = 0;
+  scoreEl.textContent = 0;
+  running = false;
+  gameOver = false;
+  placeFood();
+  draw();
+}
+
+function placeFood() {
+  const occupied = new Set(snake.map(s => `${s.x},${s.y}`));
+  if (occupied.size >= COLS * ROWS) { winGame(); return; }
+  let pos;
+  do {
+    pos = { x: Math.floor(Math.random() * COLS), y: Math.floor(Math.random() * ROWS) };
+  } while (occupied.has(`${pos.x},${pos.y}`));
+  food = pos;
+}
+
+function update() {
+  if (!running || gameOver) return;
+
+  dir = nextDir;
+  const head = { x: snake[0].x + dir.x, y: snake[0].y + dir.y };
+
+  // Wall collision
+  if (head.x < 0 || head.x >= COLS || head.y < 0 || head.y >= ROWS) {
+    endGame();
+    return;
+  }
+
+  // Self collision
+  for (const seg of snake) {
+    if (seg.x === head.x && seg.y === head.y) {
+      endGame();
+      return;
+    }
+  }
+
+  snake.unshift(head);
+
+  if (head.x === food.x && head.y === food.y) {
+    score++;
+    scoreEl.textContent = score;
+    if (score > best) {
+      best = score;
+      bestEl.textContent = best;
+    }
+    placeFood();
+  } else {
+    snake.pop();
+  }
+
+  draw();
+}
+
+function endGame() {
+  gameOver = true;
+  running = false;
+  messageEl.textContent = 'Game Over! Press Space or Enter to restart';
+  draw();
+}
+
+function winGame() {
+  gameOver = true;
+  running = false;
+  messageEl.textContent = 'You Win! Press Space or Enter to restart';
+  draw();
+}
+
+function draw() {
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+  // Grid lines (subtle)
+  ctx.strokeStyle = 'rgba(255,255,255,0.03)';
+  for (let x = 0; x <= COLS; x++) {
+    ctx.beginPath(); ctx.moveTo(x * CELL, 0); ctx.lineTo(x * CELL, canvas.height); ctx.stroke();
+  }
+  for (let y = 0; y <= ROWS; y++) {
+    ctx.beginPath(); ctx.moveTo(0, y * CELL); ctx.lineTo(canvas.width, y * CELL); ctx.stroke();
+  }
+
+  // Food
+  ctx.fillStyle = '#e94560';
+  ctx.shadowColor = '#e94560';
+  ctx.shadowBlur = 10;
+  ctx.beginPath();
+  ctx.arc(food.x * CELL + CELL / 2, food.y * CELL + CELL / 2, CELL / 2 - 2, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.shadowBlur = 0;
+
+  // Snake
+  snake.forEach((seg, i) => {
+    const t = i / snake.length;
+    const g = Math.round(200 - t * 100);
+    ctx.fillStyle = i === 0 ? '#53d8a8' : `rgb(30, ${g}, 120)`;
+    ctx.shadowColor = i === 0 ? '#53d8a8' : 'transparent';
+    ctx.shadowBlur = i === 0 ? 8 : 0;
+    const pad = i === 0 ? 1 : 2;
+    ctx.fillRect(seg.x * CELL + pad, seg.y * CELL + pad, CELL - pad * 2, CELL - pad * 2);
+  });
+  ctx.shadowBlur = 0;
+
+  if (gameOver) {
+    ctx.fillStyle = 'rgba(0,0,0,0.55)';
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+    ctx.fillStyle = '#e94560';
+    ctx.font = 'bold 36px sans-serif';
+    ctx.textAlign = 'center';
+    ctx.fillText('GAME OVER', canvas.width / 2, canvas.height / 2);
+  }
+}
+
+document.addEventListener('keydown', e => {
+  const key = e.key;
+
+  if (gameOver && (key === ' ' || key === 'Enter')) {
+    messageEl.textContent = '';
+    init();
+    running = true;
+    return;
+  }
+
+  const map = {
+    ArrowUp: { x: 0, y: -1 }, w: { x: 0, y: -1 }, W: { x: 0, y: -1 },
+    ArrowDown: { x: 0, y: 1 }, s: { x: 0, y: 1 }, S: { x: 0, y: 1 },
+    ArrowLeft: { x: -1, y: 0 }, a: { x: -1, y: 0 }, A: { x: -1, y: 0 },
+    ArrowRight: { x: 1, y: 0 }, d: { x: 1, y: 0 }, D: { x: 1, y: 0 },
+  };
+
+  const nd = map[key];
+  if (!nd) return;
+  e.preventDefault();
+
+  // Prevent reversing into yourself
+  if (nd.x === -dir.x && nd.y === -dir.y) return;
+
+  nextDir = nd;
+
+  if (!running && !gameOver) {
+    messageEl.textContent = '';
+    running = true;
+  }
+});
+
+init();
+setInterval(update, TICK_MS);
+</script>
+</body>
+</html>
