@@ -19,11 +19,11 @@ jobs:
           fetch-depth: 0
 
       - name: Review PR with Claude
-        id: claude-review
         uses: anthropics/claude-code-action@v1
         with:
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
-          direct_prompt: |
+          display_report: true
+          prompt: |
             Review this PR. Focus on:
             - Bugs or logic errors
             - Security concerns
@@ -31,16 +31,3 @@ jobs:
             - Code clarity and maintainability
 
             Be concise. Only comment where there's something actionable.
-
-      - name: Post review summary
-        uses: actions/github-script@v7
-        with:
-          script: |
-            const body = `## Claude PR Review\n\n${{ steps.claude-review.outputs.response }}`;
-            await github.rest.pulls.createReview({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              pull_number: context.issue.number,
-              body: body,
-              event: 'COMMENT'
-            });
