@@ -7,7 +7,6 @@ on:
 jobs:
   claude-review:
     runs-on: ubuntu-latest
-    environment: default
     permissions:
       contents: read
       pull-requests: write
