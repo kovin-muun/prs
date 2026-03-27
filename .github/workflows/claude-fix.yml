@@ -1,0 +1,84 @@
+name: Claude Fix from Review Comment
+on:
+  pull_request_review_comment:
+    types: [created]
+
+jobs:
+  fix:
+    # Only run when a reply to an existing review comment mentions @claude
+    if: >
+      contains(github.event.comment.body, '@claude') &&
+      github.event.comment.in_reply_to_id != null
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+      id-token: write
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event.pull_request.head.ref }}
+          fetch-depth: 0
+
+      - name: Configure git
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+      - name: Fetch original review comment
+        id: original
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          COMMENT_BODY=$(gh api \
+            "repos/${{ github.repository }}/pulls/comments/${{ github.event.comment.in_reply_to_id }}" \
+            --jq '.body')
+          {
+            echo "body<<GHEOF"
+            echo "$COMMENT_BODY"
+            echo "GHEOF"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: React to comment
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh api \
+            "repos/${{ github.repository }}/pulls/comments/${{ github.event.comment.id }}/reactions" \
+            -f content='eyes' --silent
+
+      - uses: anthropics/claude-code-action@v1
+        with:
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          prompt: |
+            You are fixing code in a pull request based on a review comment thread.
+
+            REPO: ${{ github.repository }}
+            PR NUMBER: ${{ github.event.pull_request.number }}
+            PR BRANCH: ${{ github.event.pull_request.head.ref }}
+
+            FILE: ${{ github.event.comment.path }}
+            LINE: ${{ github.event.comment.original_line }}
+            DIFF HUNK:
+            ```
+            ${{ github.event.comment.diff_hunk }}
+            ```
+
+            ORIGINAL REVIEW COMMENT (the suggestion/issue found):
+            ${{ steps.original.outputs.body }}
+
+            USER'S REPLY (instructions for the fix — mentions @claude):
+            ${{ github.event.comment.body }}
+
+            ---
+
+            Instructions:
+            1. Read the file at the path above and understand the code around the indicated line.
+            2. Apply the fix described in the original review comment, following any additional instructions from the user's reply.
+            3. Stage and commit the change with a message like: "Fix: <short description of what was fixed>"
+            4. Push the commit to the PR branch.
+            5. After pushing, reply to the review comment thread confirming what you changed using:
+               gh api "repos/${{ github.repository }}/pulls/${{ github.event.pull_request.number }}/comments" -f body="<your summary>" -F in_reply_to=${{ github.event.comment.in_reply_to_id }}
+
+          claude_args: |
+            --allowedTools "Read,Edit,Write,Glob,Grep,Bash(git add:*),Bash(git commit:*),Bash(git push:*),Bash(gh api:*)"
