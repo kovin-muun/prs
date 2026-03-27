@@ -202,7 +202,7 @@ document.addEventListener('keydown', e => {
   e.preventDefault();
 
   // Prevent reversing into yourself
-  if (nd.x === -dir.x && nd.y === -dir.y) return;
+  if (nd.x === -nextDir.x && nd.y === -nextDir.y) return;
 
   nextDir = nd;
 
