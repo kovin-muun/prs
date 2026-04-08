@@ -1,7 +1,15 @@
 name: Claude Auto Review with Tracking
 on:
+  workflow_dispatch:
+    inputs:
+      pr_number:
+        description: 'PR number to review'
+        required: true
   pull_request:
     types: [opened, synchronize, ready_for_review, reopened]
+
+env:
+  MAX_DIFF_LINES: 10000
 
 jobs:
   review:
@@ -15,13 +23,29 @@ jobs:
         with:
           fetch-depth: 1
 
+      - name: Check diff size
+        id: diff-check
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          DIFF_LINES=$(gh pr diff ${{ github.event.pull_request.number || github.event.inputs.pr_number }} | wc -l)
+          echo "diff_lines=$DIFF_LINES" >> "$GITHUB_OUTPUT"
+          if [ "$DIFF_LINES" -gt "$MAX_DIFF_LINES" ]; then
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            echo "::warning::Skipping Claude review — diff is $DIFF_LINES lines (limit: $MAX_DIFF_LINES)"
+            gh pr comment ${{ github.event.pull_request.number || github.event.inputs.pr_number }} --body "⚠️ **Claude review skipped** — this PR's diff is $DIFF_LINES lines, which exceeds the $MAX_DIFF_LINES-line limit. Please request a manual review."
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
+
       - uses: anthropics/claude-code-action@v1
+        if: steps.diff-check.outputs.skip != 'true'
         with:
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
-          track_progress: true # ✨ Enables tracking comments
+          track_progress: ${{ github.event_name == 'pull_request' }}
           prompt: |
             REPO: ${{ github.repository }}
-            PR NUMBER: ${{ github.event.pull_request.number }}
+            PR NUMBER: ${{ github.event.pull_request.number || github.event.inputs.pr_number }}
 
             Please review this pull request with a focus on:
             - Code quality and best practices
@@ -32,4 +56,4 @@ jobs:
             Provide detailed feedback using inline comments for specific issues.
 
           claude_args: |
-            --allowedTools "mcp__github_inline_comment__create_inline_comment,Bash(gh pr comment:*),Bash(gh pr diff:*),Bash(gh pr view:*)"
+            --max-turns 3 --max-budget-usd 20.00 --allowedTools "mcp__github_inline_comment__create_inline_comment,Bash(gh pr comment:*),Bash(gh pr diff:*),Bash(gh pr view:*)"
