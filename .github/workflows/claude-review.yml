@@ -56,5 +56,9 @@ jobs:
 
             Provide detailed feedback using inline comments for specific issues.
 
+            Only provide feedback about things that need to be addressed, not feedback about a work well done.
+            Don't repeat feedback already given for previous pushes in this PR.
+            If you don't have new things to say, then don't post any new comment.
+
           claude_args: |
             --model claude-opus-4-6 --max-turns 10 --max-budget-usd 1.5 --allowedTools "mcp__github_inline_comment__create_inline_comment,Bash,Read,Glob,Grep"
