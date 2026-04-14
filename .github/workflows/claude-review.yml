@@ -39,12 +39,11 @@ jobs:
           fi
 
       - uses: anthropics/claude-code-action@v1
-        id: claude-review
         if: steps.diff-check.outputs.skip != 'true'
         with:
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
           track_progress: ${{ github.event_name == 'pull_request' }}
-          show_full_output: true
+          show_full_output: true    
           prompt: |
             REPO: ${{ github.repository }}
             PR NUMBER: ${{ github.event.pull_request.number || github.event.inputs.pr_number }}
@@ -57,53 +56,5 @@ jobs:
 
             Provide detailed feedback using inline comments for specific issues.
 
-            You must post the review summary and any inline comments in the corresponding PR.
-
           claude_args: |
             --model claude-opus-4-6 --max-turns 10 --max-budget-usd 1.5 --allowedTools "mcp__github_inline_comment__create_inline_comment,Bash,Read,Glob,Grep"
-
-      - name: Post model usage to PR
-        if: steps.diff-check.outputs.skip != 'true' && steps.claude-review.outputs.execution_file != ''
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          PR_NUMBER="${{ github.event.pull_request.number || github.event.inputs.pr_number }}"
-          EXEC_FILE="${{ steps.claude-review.outputs.execution_file }}"
-
-          if [ -f "$EXEC_FILE" ]; then
-            USAGE=$(jq '.modelUsage // empty' "$EXEC_FILE" 2>/dev/null)
-            if [ -n "$USAGE" ]; then
-              TOTAL_COST=$(echo "$USAGE" | jq '[.[].costUSD] | add // 0' 2>/dev/null)
-              TOTAL_INPUT=$(echo "$USAGE" | jq '[.[].inputTokens] | add // 0' 2>/dev/null)
-              TOTAL_OUTPUT=$(echo "$USAGE" | jq '[.[].outputTokens] | add // 0' 2>/dev/null)
-              TOTAL_CACHE_READ=$(echo "$USAGE" | jq '[.[].cacheReadInputTokens] | add // 0' 2>/dev/null)
-              TOTAL_CACHE_CREATE=$(echo "$USAGE" | jq '[.[].cacheCreationInputTokens] | add // 0' 2>/dev/null)
-
-              BODY=$(cat <<EOF
-          📊 **Claude Review — Model Usage**
-
-          | Metric | Value |
-          |--------|-------|
-          | **Total Cost** | \$${TOTAL_COST} |
-          | **Input Tokens** | ${TOTAL_INPUT} |
-          | **Output Tokens** | ${TOTAL_OUTPUT} |
-          | **Cache Read Tokens** | ${TOTAL_CACHE_READ} |
-          | **Cache Creation Tokens** | ${TOTAL_CACHE_CREATE} |
-
-          <details>
-          <summary>Raw usage JSON</summary>
-
-          \`\`\`json
-          $(echo "$USAGE" | jq '.')
-          \`\`\`
-          </details>
-          EOF
-              )
-
-              gh pr comment "$PR_NUMBER" --body "$BODY"
-            else
-              echo "::warning::No modelUsage found in execution file"
-            fi
-          else
-            echo "::warning::Execution file not found at $EXEC_FILE"
-          fi
