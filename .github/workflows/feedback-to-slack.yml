@@ -13,7 +13,7 @@ jobs:
   comment-feedback:
     # Only run for non-bot comments on PRs
     if: >
-      github.event.comment.user.login != 'github-actions[bot]' &&
+      github.event.comment.user.login != 'claude[bot]' &&
       (
         github.event_name == 'pull_request_review_comment' ||
         (github.event_name == 'issue_comment' && github.event.issue.pull_request)
@@ -41,8 +41,8 @@ jobs:
             PARENT=$(gh api "repos/${REPO}/pulls/comments/${REPLY_TO}")
             PARENT_LOGIN=$(echo "$PARENT" | jq -r '.user.login')
 
-            if [ "$PARENT_LOGIN" != "github-actions[bot]" ]; then
-              echo "Parent comment not by Claude"
+            if [ "$PARENT_LOGIN" != "claude[bot]" ]; then
+              echo "Parent comment not by Claude: ${PARENT_LOGIN}"
               echo "is_claude=false" >> "$GITHUB_OUTPUT"
               exit 0
             fi
@@ -60,7 +60,7 @@ jobs:
             PREV_COMMENTS=$(gh api "repos/${REPO}/issues/${PR_NUMBER}/comments?per_page=100" \
               --jq "[.[] | select(.id < ${CURRENT_ID})]")
 
-            RECENT_BOT=$(echo "$PREV_COMMENTS" | jq '.[-3:] | any(.user.login == "github-actions[bot]")')
+            RECENT_BOT=$(echo "$PREV_COMMENTS" | jq '.[-3:] | any(.user.login == "claude[bot]")')
             if [ "$RECENT_BOT" != "true" ]; then
               echo "No recent Claude comment on this PR"
               echo "is_claude=false" >> "$GITHUB_OUTPUT"
@@ -68,7 +68,7 @@ jobs:
             fi
 
             PARENT_PREVIEW=$(echo "$PREV_COMMENTS" \
-              | jq -r '[.[] | select(.user.login == "github-actions[bot]")] | last | .body' \
+              | jq -r '[.[] | select(.user.login == "claude[bot]")] | last | .body' \
               | head -c 200)
             echo "pr_number=${PR_NUMBER}" >> "$GITHUB_OUTPUT"
             echo "pr_url=${{ github.event.issue.html_url }}" >> "$GITHUB_OUTPUT"
@@ -194,7 +194,7 @@ jobs:
             local comment_id="$1" api_path="$2" pr_num="$3" pr_title="$4" preview="$5"
 
             gh api "repos/${REPO}/${api_path}/${comment_id}/reactions" --paginate \
-              --jq ".[] | select(.created_at > \"${SINCE}\" and .user.login != \"github-actions[bot]\") | [.user.login, .content] | @tsv" \
+              --jq ".[] | select(.created_at > \"${SINCE}\" and .user.login != \"claude[bot]\") | [.user.login, .content] | @tsv" \
             2>/dev/null | while IFS=$'\t' read -r user content; do
               [ -n "$user" ] || continue
               notify_slack "$(map_emoji "$content")" "$user" "$pr_num" "$pr_title" "$preview"
@@ -208,7 +208,7 @@ jobs:
 
             # Top-level PR comments (issue comments)
             gh api "repos/${REPO}/issues/${PR_NUM}/comments" --paginate \
-              --jq '.[] | select(.user.login == "github-actions[bot]") | [(.id | tostring), (.body | .[0:200])] | @tsv' \
+              --jq '.[] | select(.user.login == "claude[bot]") | [(.id | tostring), (.body | .[0:200])] | @tsv' \
             2>/dev/null | while IFS=$'\t' read -r cid preview; do
               [ -n "$cid" ] || continue
               check_reactions "$cid" "issues/comments" "$PR_NUM" "$PR_TITLE" "$preview"
@@ -216,7 +216,7 @@ jobs:
 
             # Inline review comments
             gh api "repos/${REPO}/pulls/${PR_NUM}/comments" --paginate \
-              --jq '.[] | select(.user.login == "github-actions[bot]") | [(.id | tostring), (.body | .[0:200])] | @tsv' \
+              --jq '.[] | select(.user.login == "claude[bot]") | [(.id | tostring), (.body | .[0:200])] | @tsv' \
             2>/dev/null | while IFS=$'\t' read -r cid preview; do
               [ -n "$cid" ] || continue
               check_reactions "$cid" "pulls/comments" "$PR_NUM" "$PR_TITLE" "$preview"
