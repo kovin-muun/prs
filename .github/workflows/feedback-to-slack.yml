@@ -87,6 +87,7 @@ jobs:
           SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
           COMMENT_BODY: ${{ github.event.comment.body }}
           PR_TITLE: ${{ github.event.pull_request.title || github.event.issue.title }}
+          PARENT_PREVIEW: ${{ steps.check.outputs.parent_preview }}
         run: |
           if [ -z "$SLACK_WEBHOOK_URL" ]; then
             echo "::warning::SLACK_WEBHOOK_URL secret is not set"
@@ -97,7 +98,7 @@ jobs:
           BODY=$(printf '%s' "$COMMENT_BODY" | head -c 300)
           PR_NUM="${{ steps.check.outputs.pr_number }}"
           PR_URL="${{ steps.check.outputs.pr_url }}"
-          PARENT="${{ steps.check.outputs.parent_preview }}"
+          PARENT="$PARENT_PREVIEW"
 
           PAYLOAD=$(jq -n \
             --arg commenter "$COMMENTER" \
