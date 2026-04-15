@@ -56,7 +56,8 @@ jobs:
 
             Provide detailed feedback using inline comments for specific issues.
 
-            Only provide feedback about things that need to be addressed, not feedback about a work well done.
+            Don't be sycophantic in the feedback and rather address issues that need attention in a straight direct manner.
+            Only provide feedback about issues that need to be addressed, not feedback about a work well done.
             Don't repeat feedback already given for previous pushes in this PR.
             If you don't have new things to say, then don't post any new comment.
 
