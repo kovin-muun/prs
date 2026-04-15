@@ -43,7 +43,7 @@ jobs:
         with:
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
           track_progress: false
-          show_full_output: true    
+          show_full_output: true
           prompt: |
             REPO: ${{ github.repository }}
             PR NUMBER: ${{ github.event.pull_request.number || github.event.inputs.pr_number }}
@@ -57,7 +57,7 @@ jobs:
             Provide detailed feedback using inline comments for specific issues.
 
             Don't be sycophantic in the feedback and rather address issues that need attention in a straight direct manner.
-            Only provide feedback about issues that need to be addressed, not feedback about a work well done.
+            Only provide feedback about issues that need to be addressed (nitpicks and suggestions are welcome), not feedback about a work well done.
             Don't repeat feedback already given for previous pushes in this PR.
             If you don't have new things to say, then don't post any new comment.
 
