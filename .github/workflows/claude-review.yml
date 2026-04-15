@@ -42,7 +42,7 @@ jobs:
         if: steps.diff-check.outputs.skip != 'true'
         with:
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
-          track_progress: ${{ github.event_name == 'pull_request' }}
+          track_progress: false
           show_full_output: true    
           prompt: |
             REPO: ${{ github.repository }}
