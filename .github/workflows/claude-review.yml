@@ -57,9 +57,9 @@ jobs:
             Provide detailed feedback using inline comments for specific issues.
 
             IMPORTANT:
-              1. only comment on changes that are actually present in the PR diff. Before posting any finding,                                                               
-            verify that the file and specific change you are referencing actually appear in `gh pr diff`. Do not                                                                   
-            infer, assume, or fabricate changes that are not visible in the diff. If you cannot point to a specific                                                                
+              1. only comment on changes that are actually present in the PR diff. Before posting any finding,
+            verify that the file and specific change you are referencing actually appear in `gh pr diff`. Do not
+            infer, assume, or fabricate changes that are not visible in the diff. If you cannot point to a specific
             diff hunk for a finding, do not post it.
               2. don't be sycophantic in the feedback and rather address issues that need attention in a straight direct manner.
               3. only provide feedback about issues that need to be addressed, not feedback about a work well done.
