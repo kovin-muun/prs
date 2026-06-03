@@ -38,7 +38,7 @@ jobs:
             echo "skip=false" >> "$GITHUB_OUTPUT"
           fi
 
-      - uses: anthropics/claude-code-action@v1
+      - uses: anthropics/claude-code-action@09f876c77e9d2d627cdf3e2f83d4d7b75106807e
         if: steps.diff-check.outputs.skip != 'true'
         with:
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
@@ -67,4 +67,4 @@ jobs:
               5. if you don't have new things to say, then don't post any new comment.
 
           claude_args: |
-            --model claude-opus-4-6 --max-turns 10 --max-budget-usd 1.5 --allowedTools "mcp__github_inline_comment__create_inline_comment,Bash,Read,Glob,Grep"
+            --model claude-opus-4-8 --max-turns 10 --max-budget-usd 1.5 --allowedTools "mcp__github_inline_comment__create_inline_comment,Bash,Read,Glob,Grep"
