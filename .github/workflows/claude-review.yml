@@ -15,25 +15,51 @@ env:
   MAX_BUDGET_USD: "3.00"
 
 jobs:
-  # Lightweight gate — always passes. Set this as the required status check
-  # in branch protection so the review is compulsory but budget failures
-  # don't block the PR.
-  review-gate:
-    name: Claude Review Gate
+  first-run:
+    name: Claude Review (first run)
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    permissions:
+      pull-requests: write
+    steps:
+      - name: Post usage instructions
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh pr comment "${{ github.event.pull_request.number }}" \
+            --repo "${{ github.repository }}" \
+            --body '🔍 **Claude will review this PR automatically.** To request a follow-up review after new pushes, comment `claude review`.'
+
+  re-run:
+    name: Claude Review (re-run)
     if: >-
-      github.event_name == 'pull_request' ||
       github.event_name == 'workflow_dispatch' ||
       (github.event_name == 'issue_comment' &&
        github.event.issue.pull_request &&
        contains(github.event.comment.body, 'claude review'))
     runs-on: ubuntu-latest
     permissions:
+      pull-requests: write
+    steps:
+      - name: Acknowledge comment
+        if: github.event_name == 'issue_comment'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh api "repos/${{ github.repository }}/issues/comments/${{ github.event.comment.id }}/reactions" \
+            -f content='+1'
+
+  review:
+    name: Claude Review
+    needs: [first-run, re-run]
+    if: >-
+      always() &&
+      (needs.first-run.result == 'success' || needs.re-run.result == 'success')
+    runs-on: ubuntu-latest
+    permissions:
       contents: read
       pull-requests: write
-      statuses: write
-    outputs:
-      pr_number: ${{ steps.pr-number.outputs.value }}
-      head_sha: ${{ steps.pr-info.outputs.head_sha }}
+      id-token: write
     steps:
       - name: Resolve PR number
         id: pr-number
@@ -46,54 +72,6 @@ jobs:
             echo "value=${{ github.event.inputs.pr_number }}" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Get PR head SHA
-        id: pr-info
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          SHA=$(gh pr view "${{ steps.pr-number.outputs.value }}" \
-            --repo "${{ github.repository }}" \
-            --json headRefOid -q .headRefOid)
-          echo "head_sha=$SHA" >> "$GITHUB_OUTPUT"
-
-      - name: Post commit statuses on PR head
-        if: github.event_name != 'pull_request'
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          SHA="${{ steps.pr-info.outputs.head_sha }}"
-          RUN_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
-          gh api "repos/${{ github.repository }}/statuses/$SHA" \
-            -f state=success \
-            -f context="Claude Review Gate" \
-            -f description="Review requested" \
-            -f target_url="$RUN_URL"
-          gh api "repos/${{ github.repository }}/statuses/$SHA" \
-            -f state=pending \
-            -f context="Claude Review" \
-            -f description="Review in progress…" \
-            -f target_url="$RUN_URL"
-
-      - name: Acknowledge comment
-        if: github.event_name == 'issue_comment'
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          gh api "repos/${{ github.repository }}/issues/comments/${{ github.event.comment.id }}/reactions" \
-            -f content='+1'
-
-  # The actual review — best effort. Not a required check, so budget
-  # exhaustion or transient failures don't block merging.
-  claude-review:
-    name: Claude Review
-    needs: review-gate
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      pull-requests: write
-      id-token: write
-      statuses: write
-    steps:
       - uses: actions/checkout@v6
         with:
           fetch-depth: 1
@@ -103,7 +81,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          PR="${{ needs.review-gate.outputs.pr_number }}"
+          PR="${{ steps.pr-number.outputs.value }}"
           DIFF_LINES=$(gh pr diff "$PR" | wc -l)
           echo "diff_lines=$DIFF_LINES" >> "$GITHUB_OUTPUT"
           if [ "$DIFF_LINES" -gt "$MAX_DIFF_LINES" ]; then
@@ -115,7 +93,6 @@ jobs:
           fi
 
       - uses: anthropics/claude-code-action@09f876c77e9d2d627cdf3e2f83d4d7b75106807e
-        id: run-review
         if: steps.diff-check.outputs.skip != 'true'
         with:
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
@@ -123,7 +100,7 @@ jobs:
           show_full_output: true
           prompt: |
             REPO: ${{ github.repository }}
-            PR NUMBER: ${{ needs.review-gate.outputs.pr_number }}
+            PR NUMBER: ${{ steps.pr-number.outputs.value }}
 
             Please review this pull request with a focus on:
             - Code quality and best practices
@@ -145,27 +122,3 @@ jobs:
 
           claude_args: |
             --model claude-opus-4-8 --max-turns 10 --max-budget-usd ${{ env.MAX_BUDGET_USD }} --allowedTools "mcp__github_inline_comment__create_inline_comment,Bash,Read,Glob,Grep"
-
-      - name: Update review status on PR head
-        if: >-
-          always() &&
-          needs.review-gate.result == 'success' &&
-          github.event_name != 'pull_request'
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          SHA="${{ needs.review-gate.outputs.head_sha }}"
-          RUN_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
-          if [ "${{ steps.run-review.outcome }}" = "success" ] || \
-             [ "${{ steps.diff-check.outputs.skip }}" = "true" ]; then
-            STATE=success
-            DESC="Review completed"
-          else
-            STATE=failure
-            DESC="Review failed — see logs"
-          fi
-          gh api "repos/${{ github.repository }}/statuses/$SHA" \
-            -f state="$STATE" \
-            -f context="Claude Review" \
-            -f description="$DESC" \
-            -f target_url="$RUN_URL"
