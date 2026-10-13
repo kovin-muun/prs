@@ -82,9 +82,9 @@ jobs:
           REPO="${{ github.repository }}"
           mkdir -p .codex-review
           gh pr view "$PR" --json title,body,url,baseRefName,headRefName,headRefOid,commits > .codex-review/pr.json
-          gh pr diff "$PR" > .codex-review/pr.diff
+          gh pr diff "$PR" | bash .github/workflows/ci/number-diff.sh > .codex-review/pr.diff
           gh api --paginate --slurp "repos/$REPO/pulls/$PR/comments" \
-            | jq '[.[][] | {id, in_reply_to_id, user: .user.login, path, line, body}]' \
+            | jq '[.[][] | {id, in_reply_to_id, user: .user.login, path, start_line, line, body}]' \
             > .codex-review/review-comments.json
           gh api --paginate --slurp "repos/$REPO/issues/$PR/comments" \
             | jq '[.[][] | {id, user: .user.login, body}]' \

@@ -8,7 +8,9 @@ file reads in Step 2.
 Provide detailed feedback using inline comments for specific issues.
 
 IMPORTANT:
-  1. use `gh pr diff` as the source of truth for what changed in this PR. Do NOT use
+  1. use `gh pr diff <pr-number> | bash .github/workflows/ci/number-diff.sh` as the source of
+     truth for what changed in this PR, instead of plain `gh pr diff`. It is the same diff, with
+     each added or context line prefixed by its line number in the new file. Do NOT use
      `git diff origin/master..HEAD` (two-dot) — it includes unrelated changes merged to master
      after the branch diverged. If you need a local git diff, always use three-dot syntax:
      `git diff origin/master...HEAD` (which shows only changes the branch introduced).
@@ -24,7 +26,8 @@ IMPORTANT:
   8. when placing an inline comment, target the exact line that contains the problem — not
      the enclosing block header, function signature, or nearby context line. This is critical
      when using GitHub suggestion blocks, because GitHub replaces the line the comment is attached
-     to. A suggestion on the wrong line produces a nonsensical replacement.
+     to. A suggestion on the wrong line produces a nonsensical replacement. Take every `line` and
+     `startLine` from the numbers in the numbered diff. Never count diff lines yourself.
 
 BUDGET:
   The budget for this review is ${MAX_BUDGET_USD}. Keep context small to stay within budget:

@@ -10,17 +10,19 @@ INPUTS:
   - the current directory: a checkout of the PR head commit. Read changed files here. Do not
     create a worktree.
   - `../.codex-review/pr.json`: PR title, body, URL, base and head refs, and commits.
-  - `../.codex-review/pr.diff`: the output of `gh pr diff`. It is the source of truth for what
-    changed in this PR.
-  - `../.codex-review/review-comments.json`: inline review comments already on the PR.
+  - `../.codex-review/pr.diff`: the output of `gh pr diff`, with each added or context line
+    prefixed by its line number in the new file. It is the source of truth for what changed in
+    this PR.
+  - `../.codex-review/review-comments.json`: inline review comments already on the PR. A
+    comment with a `start_line` covers the lines from `start_line` to `line`.
   - `../.codex-review/issue-comments.json`: top-level comments already on the PR.
 
 OUTPUT:
   Ignore the output format in Step 5. Return JSON that matches the output schema:
   - `comments`: new inline comments.
     - `path` is relative to the repository root.
-    - `line` is a line number in the new version of the file. It must be an added or context
-      line inside a hunk of `pr.diff`, or GitHub rejects the comment.
+    - `line` is a line number from `pr.diff`. Never count diff lines yourself. It must be an
+      added or context line inside a hunk, or GitHub rejects the comment.
     - `body` holds one finding, with the severity, category, description and convention from
       the Step 5 finding format. A GitHub ```suggestion block replaces exactly the line in
       `line`.
