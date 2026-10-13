@@ -1,60 +1,21 @@
 name: Claude Review
 on:
-  workflow_dispatch:
+  workflow_call:
     inputs:
       pr_number:
-        description: 'PR number to review'
         required: true
-  pull_request:
-    types: [opened, ready_for_review]
-  issue_comment:
-    types: [created]
+        type: string
+    secrets:
+      ANTHROPIC_API_KEY:
+        required: true
 
 env:
-  MAX_DIFF_LINES: 10000
+  MAX_DIFF_LINES: 100000
   MAX_BUDGET_USD: "3.00"
 
 jobs:
-  first-run:
-    name: Claude Review (first run)
-    if: github.event_name == 'pull_request'
-    runs-on: ubuntu-latest
-    permissions:
-      pull-requests: write
-    steps:
-      - name: Post usage instructions
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          gh pr comment "${{ github.event.pull_request.number }}" \
-            --repo "${{ github.repository }}" \
-            --body '🔍 **Claude will review this PR automatically.** To request a follow-up review after new pushes, comment `claude review`.'
-
-  re-run:
-    name: Claude Review (re-run)
-    if: >-
-      github.event_name == 'workflow_dispatch' ||
-      (github.event_name == 'issue_comment' &&
-       github.event.issue.pull_request &&
-       contains(github.event.comment.body, 'claude review'))
-    runs-on: ubuntu-latest
-    permissions:
-      pull-requests: write
-    steps:
-      - name: Acknowledge comment
-        if: github.event_name == 'issue_comment'
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          gh api "repos/${{ github.repository }}/issues/comments/${{ github.event.comment.id }}/reactions" \
-            -f content='+1'
-
   review:
-    name: Claude Review
-    needs: [first-run, re-run]
-    if: >-
-      always() &&
-      (needs.first-run.result == 'success' || needs.re-run.result == 'success')
+    name: Run
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -63,21 +24,28 @@ jobs:
     steps:
       - name: Resolve PR number
         id: pr-number
-        run: |
-          if [ "${{ github.event_name }}" = "pull_request" ]; then
-            echo "value=${{ github.event.pull_request.number }}" >> "$GITHUB_OUTPUT"
-          elif [ "${{ github.event_name }}" = "issue_comment" ]; then
-            echo "value=${{ github.event.issue.number }}" >> "$GITHUB_OUTPUT"
-          else
-            echo "value=${{ github.event.inputs.pr_number }}" >> "$GITHUB_OUTPUT"
-          fi
+        run: echo "value=${{ inputs.pr_number }}" >> "$GITHUB_OUTPUT"
 
       - uses: actions/checkout@v6
         with:
           fetch-depth: 1
 
+      - name: Check for supported tech stacks
+        id: stack-check
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          SUPPORTED_FILES=$(gh pr diff ${{ steps.pr-number.outputs.value }} --name-only | grep -cE '\.(java|kt|go|swift)$' || true)
+          if [ "$SUPPORTED_FILES" -eq 0 ]; then
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            echo "::notice::Skipping Claude review — no files from a supported tech stack changed"
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Check diff size
         id: diff-check
+        if: steps.stack-check.outputs.skip != 'true'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -92,33 +60,81 @@ jobs:
             echo "skip=false" >> "$GITHUB_OUTPUT"
           fi
 
-      - uses: anthropics/claude-code-action@09f876c77e9d2d627cdf3e2f83d4d7b75106807e
-        if: steps.diff-check.outputs.skip != 'true'
+      - name: Label PR as skipped
+        if: steps.stack-check.outputs.skip == 'true' || steps.diff-check.outputs.skip == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          PR="${{ steps.pr-number.outputs.value }}"
+          gh pr edit "$PR" --add-label claude-skipped
+
+      - name: Label PR as reviewing
+        if: steps.stack-check.outputs.skip != 'true' && steps.diff-check.outputs.skip != 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          PR="${{ steps.pr-number.outputs.value }}"
+          gh pr edit "$PR" --remove-label claude-reviewed 2>/dev/null || true
+          gh pr edit "$PR" --remove-label claude-failed 2>/dev/null || true
+          gh pr edit "$PR" --remove-label claude-skipped 2>/dev/null || true
+          gh pr edit "$PR" --add-label claude-reviewing
+
+      - name: Compose review prompt
+        id: review-prompt
+        if: steps.stack-check.outputs.skip != 'true' && steps.diff-check.outputs.skip != 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          PR="${{ steps.pr-number.outputs.value }}"
+          {
+            echo "value<<__PROMPT_EOF__"
+            bash .github/workflows/ci/compose-prompt.sh "$PR" "${{ github.repository }}" "${{ env.MAX_BUDGET_USD }}" "${{ runner.temp }}/review-system.md"
+            echo "__PROMPT_EOF__"
+          } >> "$GITHUB_OUTPUT"
+
+      - uses: anthropics/claude-code-action@46a42b43239748e5b25771606bf1f551c3b1b517 # v1.0.232
+        id: claude-review
+        if: steps.stack-check.outputs.skip != 'true' && steps.diff-check.outputs.skip != 'true'
+        env:
+          # Drop the git-status snapshot (branch, recent commits) from Claude
+          # Code's system prompt — it is the only per-PR byte ahead of the
+          # review guidance, and it breaks prompt-cache sharing across runs.
+          CLAUDE_CODE_DISABLE_GIT_INSTRUCTIONS: "1"
         with:
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
           track_progress: false
           show_full_output: true
-          prompt: |
-            REPO: ${{ github.repository }}
-            PR NUMBER: ${{ steps.pr-number.outputs.value }}
-
-            Please review this pull request with a focus on:
-            - Code quality and best practices
-            - Potential bugs or issues
-            - Security implications
-            - Performance considerations
-
-            Provide detailed feedback using inline comments for specific issues.
-
-            IMPORTANT:
-              1. only comment on changes that are actually present in the PR diff. Before posting any finding,
-            verify that the file and specific change you are referencing actually appear in `gh pr diff`. Do not
-            infer, assume, or fabricate changes that are not visible in the diff. If you cannot point to a specific
-            diff hunk for a finding, do not post it.
-              2. don't be sycophantic in the feedback and rather address issues that need attention in a straight direct manner.
-              3. only provide feedback about issues that need to be addressed, not feedback about a work well done.
-              4. don't repeat feedback already given for previous pushes in this PR.
-              5. if you don't have new things to say, then don't post any new comment.
-
+          prompt: ${{ steps.review-prompt.outputs.value }}
           claude_args: |
-            --model claude-opus-4-8 --max-turns 10 --max-budget-usd ${{ env.MAX_BUDGET_USD }} --allowedTools "mcp__github_inline_comment__create_inline_comment,Bash,Read,Glob,Grep"
+            --model claude-opus-5-5 --max-budget-usd ${{ env.MAX_BUDGET_USD }} --append-system-prompt-file "${{ runner.temp }}/review-system.md" --allowedTools "mcp__github_inline_comment__create_inline_comment,Bash,Read,Glob,Grep"
+
+      - name: Label PR as reviewed
+        if: always() && steps.claude-review.outcome == 'success'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          PR="${{ steps.pr-number.outputs.value }}"
+          gh pr edit "$PR" --remove-label claude-reviewing --add-label claude-reviewed
+
+      - name: Handle review failure
+        if: always() && steps.claude-review.outcome == 'failure'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EXECUTION_FILE: ${{ steps.claude-review.outputs.execution_file }}
+          MAX_BUDGET: ${{ env.MAX_BUDGET_USD }}
+        run: |
+          PR="${{ steps.pr-number.outputs.value }}"
+          gh pr edit "$PR" --remove-label claude-reviewing --add-label claude-failed
+
+          LOGS_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+
+          if [ -n "$EXECUTION_FILE" ] && [ -f "$EXECUTION_FILE" ]; then
+            COST=$(jq -s 'map(select(.total_cost_usd)) | last | .total_cost_usd' "$EXECUTION_FILE" 2>/dev/null)
+            if [ -n "$COST" ] && [ "$COST" != "null" ] && [ "$(echo "$COST > $MAX_BUDGET" | bc)" = "1" ]; then
+              FORMATTED=$(printf '%.2f' "$COST")
+              gh pr comment "$PR" --body "⚠️ **Claude review stopped** — cost (\$$FORMATTED) exceeded the \$$MAX_BUDGET budget limit. The review was cut short. See [logs]($LOGS_URL)."
+              exit 0
+            fi
+          fi
+
+          gh pr comment "$PR" --body "⚠️ **Claude review failed** — see [workflow logs]($LOGS_URL) for details."

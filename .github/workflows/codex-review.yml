@@ -1,0 +1,164 @@
+name: Codex Review
+on:
+  workflow_call:
+    inputs:
+      pr_number:
+        required: true
+        type: string
+    secrets:
+      OPENAI_API_KEY:
+        required: true
+
+env:
+  MAX_DIFF_LINES: 100000
+
+jobs:
+  review:
+    name: Run
+    runs-on: ubuntu-latest
+    # Codex has no cost cap like --max-budget-usd; the timeout bounds a runaway review.
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+      - name: Resolve PR number
+        id: pr-number
+        run: echo "value=${{ inputs.pr_number }}" >> "$GITHUB_OUTPUT"
+
+      # Codex can read the whole runner filesystem, so keep the token out of .git/config.
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Check for supported tech stacks
+        id: stack-check
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          SUPPORTED_FILES=$(gh pr diff ${{ steps.pr-number.outputs.value }} --name-only | grep -cE '\.(java|kt|go|swift)$' || true)
+          if [ "$SUPPORTED_FILES" -eq 0 ]; then
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            echo "::notice::Skipping Codex review — no files from a supported tech stack changed"
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Check diff size
+        id: diff-check
+        if: steps.stack-check.outputs.skip != 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          PR="${{ steps.pr-number.outputs.value }}"
+          DIFF_LINES=$(gh pr diff "$PR" | wc -l)
+          if [ "$DIFF_LINES" -gt "$MAX_DIFF_LINES" ]; then
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            echo "::warning::Skipping Codex review — diff is $DIFF_LINES lines (limit: $MAX_DIFF_LINES)"
+            gh pr comment "$PR" --body "⚠️ **Codex review skipped** — this PR's diff is $DIFF_LINES lines, which exceeds the $MAX_DIFF_LINES-line limit. Please request a manual review."
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Label PR as skipped
+        if: steps.stack-check.outputs.skip == 'true' || steps.diff-check.outputs.skip == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          PR="${{ steps.pr-number.outputs.value }}"
+          gh pr edit "$PR" --add-label codex-skipped
+
+      - name: Label PR as reviewing
+        if: steps.stack-check.outputs.skip != 'true' && steps.diff-check.outputs.skip != 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          PR="${{ steps.pr-number.outputs.value }}"
+          gh pr edit "$PR" --remove-label codex-reviewed 2>/dev/null || true
+          gh pr edit "$PR" --remove-label codex-failed 2>/dev/null || true
+          gh pr edit "$PR" --remove-label codex-skipped 2>/dev/null || true
+          gh pr edit "$PR" --add-label codex-reviewing
+
+      - name: Check out PR head
+        if: steps.stack-check.outputs.skip != 'true' && steps.diff-check.outputs.skip != 'true'
+        uses: actions/checkout@v6
+        with:
+          ref: refs/pull/${{ steps.pr-number.outputs.value }}/head
+          path: pr-head
+          fetch-depth: 1
+          persist-credentials: false
+
+      # Codex runs without network access, so it reads the PR from these files
+      # (see codex-prompt.md).
+      - name: Gather PR context
+        id: context
+        if: steps.stack-check.outputs.skip != 'true' && steps.diff-check.outputs.skip != 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          PR="${{ steps.pr-number.outputs.value }}"
+          REPO="${{ github.repository }}"
+          mkdir -p .codex-review
+          gh pr view "$PR" --json title,body,url,baseRefName,headRefName,headRefOid,commits > .codex-review/pr.json
+          gh pr diff "$PR" > .codex-review/pr.diff
+          gh api --paginate --slurp "repos/$REPO/pulls/$PR/comments" \
+            | jq '[.[][] | {id, in_reply_to_id, user: .user.login, path, line, body}]' \
+            > .codex-review/review-comments.json
+          gh api --paginate --slurp "repos/$REPO/issues/$PR/comments" \
+            | jq '[.[][] | {id, user: .user.login, body}]' \
+            > .codex-review/issue-comments.json
+          echo "head_sha=$(jq -r .headRefOid .codex-review/pr.json)" >> "$GITHUB_OUTPUT"
+
+      - name: Compose review prompt
+        if: steps.stack-check.outputs.skip != 'true' && steps.diff-check.outputs.skip != 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          bash .github/workflows/ci/compose-prompt.sh "${{ steps.pr-number.outputs.value }}" "${{ github.repository }}" "" \
+            .codex-review/system.md codex-prompt.md > .codex-review/user.md
+          cat .codex-review/system.md .codex-review/user.md > .codex-review/prompt.md
+
+      - uses: openai/codex-action@bdf19a4a223ec2549a3e2274a0cf61556bc07675 # v1.13
+        id: codex-review
+        if: steps.stack-check.outputs.skip != 'true' && steps.diff-check.outputs.skip != 'true'
+        with:
+          openai-api-key: ${{ secrets.OPENAI_API_KEY }}
+          codex-version: 0.156.1
+          model: gpt-6.1-sol
+          effort: high
+          prompt-file: .codex-review/prompt.md
+          working-directory: pr-head
+          permission-profile: ":read-only"
+          output-schema-file: .github/workflows/ci/codex-review-schema.json
+          output-file: .codex-review/review.json
+
+      - name: Post review
+        id: post-review
+        if: steps.codex-review.outcome == 'success'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          bash .github/workflows/ci/post-codex-review.sh "${{ steps.pr-number.outputs.value }}" "${{ github.repository }}" \
+            "${{ steps.context.outputs.head_sha }}" .codex-review/review.json
+
+      - name: Label PR as reviewed
+        if: always() && steps.post-review.outcome == 'success'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          PR="${{ steps.pr-number.outputs.value }}"
+          gh pr edit "$PR" --remove-label codex-reviewing --add-label codex-reviewed
+
+      - name: Handle review failure
+        if: >-
+          always() &&
+          (steps.codex-review.outcome == 'failure' || steps.post-review.outcome == 'failure' ||
+           steps.context.outcome == 'failure')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          PR="${{ steps.pr-number.outputs.value }}"
+          gh pr edit "$PR" --remove-label codex-reviewing --add-label codex-failed
+          LOGS_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          gh pr comment "$PR" --body "⚠️ **Codex review failed** — see [workflow logs]($LOGS_URL) for details."

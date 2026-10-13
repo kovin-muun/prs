@@ -1,0 +1,107 @@
+name: Muun Review
+on:
+  workflow_dispatch:
+    inputs:
+      pr_number:
+        description: 'PR number to review'
+        required: true
+      reviewer:
+        description: 'Reviewer to run'
+        type: choice
+        options: [both, claude, codex]
+        default: both
+  pull_request:
+    types: [opened, ready_for_review]
+  issue_comment:
+    types: [created]
+
+jobs:
+  first-run:
+    name: First run
+    if: >-
+      github.event_name == 'pull_request' &&
+      !contains(github.event.pull_request.labels.*.name, 'do-not-review')
+    runs-on: ubuntu-latest
+    permissions:
+      pull-requests: write
+    steps:
+      - name: Post usage instructions
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh pr comment "${{ github.event.pull_request.number }}" \
+            --repo "${{ github.repository }}" \
+            --body '🔍 **Claude and Codex will review this PR automatically.** To request a follow-up review after new pushes, comment `claude review`, `codex review`, or `muun review` for both.'
+
+  re-run:
+    name: Re-run
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'issue_comment' &&
+       github.event.issue.pull_request &&
+       (contains(github.event.comment.body, 'claude review') ||
+        contains(github.event.comment.body, 'codex review') ||
+        contains(github.event.comment.body, 'muun review')))
+    runs-on: ubuntu-latest
+    permissions:
+      pull-requests: write
+    outputs:
+      claude: ${{ steps.reviewers.outputs.claude }}
+      codex: ${{ steps.reviewers.outputs.codex }}
+    steps:
+      - name: Select reviewers
+        id: reviewers
+        env:
+          REVIEWER: ${{ github.event.inputs.reviewer }}
+          COMMENT: ${{ github.event.comment.body }}
+        run: |
+          CLAUDE=false CODEX=false
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            [ "$REVIEWER" != "codex" ] && CLAUDE=true
+            [ "$REVIEWER" != "claude" ] && CODEX=true
+          else
+            grep -qiE 'claude review|muun review' <<<"$COMMENT" && CLAUDE=true
+            grep -qiE 'codex review|muun review' <<<"$COMMENT" && CODEX=true
+          fi
+          echo "claude=$CLAUDE" >> "$GITHUB_OUTPUT"
+          echo "codex=$CODEX" >> "$GITHUB_OUTPUT"
+
+      - name: Acknowledge comment
+        if: github.event_name == 'issue_comment'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh api "repos/${{ github.repository }}/issues/comments/${{ github.event.comment.id }}/reactions" \
+            -f content='+1'
+
+  claude:
+    name: Claude
+    needs: [first-run, re-run]
+    if: >-
+      always() &&
+      (needs.first-run.result == 'success' || needs.re-run.outputs.claude == 'true')
+    permissions:
+      contents: read
+      pull-requests: write
+      id-token: write
+    uses: ./.github/workflows/claude-review.yml
+    with:
+      pr_number: ${{ github.event.pull_request.number || github.event.issue.number || inputs.pr_number }}
+    secrets:
+      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+
+  codex:
+    name: Codex
+    # Runs after the Claude review so Codex can read Claude's comments.
+    needs: [first-run, re-run, claude]
+    if: >-
+      always() &&
+      (needs.first-run.result == 'success' || needs.re-run.outputs.codex == 'true')
+    permissions:
+      contents: read
+      pull-requests: write
+    uses: ./.github/workflows/codex-review.yml
+    with:
+      pr_number: ${{ github.event.pull_request.number || github.event.issue.number || inputs.pr_number }}
+    secrets:
+      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}

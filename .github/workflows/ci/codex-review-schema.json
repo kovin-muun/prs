@@ -1,0 +1,32 @@
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["comments", "replies"],
+  "properties": {
+    "comments": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["path", "line", "body"],
+        "properties": {
+          "path": { "type": "string" },
+          "line": { "type": "integer" },
+          "body": { "type": "string" }
+        }
+      }
+    },
+    "replies": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["comment_id", "body"],
+        "properties": {
+          "comment_id": { "type": "integer" },
+          "body": { "type": "string" }
+        }
+      }
+    }
+  }
+}
