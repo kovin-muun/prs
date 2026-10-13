@@ -13,13 +13,15 @@ HEAD_SHA="$3"
 REVIEW="$4"
 
 # Codex posts as github-actions[bot]; the prefix tells readers (and the next
-# Codex run) which comments are from Codex.
+# Codex run) which comments are from Codex. Codex sometimes writes the prefix
+# itself, so strip it before adding it.
 PREFIX='**Codex:** '
 
 while IFS= read -r comment; do
   path=$(jq -r .path <<<"$comment")
   line=$(jq -r .line <<<"$comment")
   body=$(jq -r .body <<<"$comment")
+  body=${body#"$PREFIX"}
   if ! gh api "repos/$REPO/pulls/$PR/comments" --silent \
       -f commit_id="$HEAD_SHA" -f side=RIGHT -f path="$path" -F line="$line" \
       -f body="$PREFIX$body"; then
@@ -31,6 +33,7 @@ done < <(jq -c '.comments[]' "$REVIEW")
 while IFS= read -r reply; do
   id=$(jq -r .comment_id <<<"$reply")
   body=$(jq -r .body <<<"$reply")
+  body=${body#"$PREFIX"}
   if ! gh api "repos/$REPO/pulls/$PR/comments/$id/replies" --silent \
       -f body="$PREFIX$body"; then
     echo "::warning::Could not reply to comment $id"

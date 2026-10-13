@@ -61,25 +61,6 @@ jobs:
             echo "skip=false" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Label PR as skipped
-        if: steps.stack-check.outputs.skip == 'true' || steps.diff-check.outputs.skip == 'true'
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          PR="${{ steps.pr-number.outputs.value }}"
-          gh pr edit "$PR" --add-label codex-skipped
-
-      - name: Label PR as reviewing
-        if: steps.stack-check.outputs.skip != 'true' && steps.diff-check.outputs.skip != 'true'
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          PR="${{ steps.pr-number.outputs.value }}"
-          gh pr edit "$PR" --remove-label codex-reviewed 2>/dev/null || true
-          gh pr edit "$PR" --remove-label codex-failed 2>/dev/null || true
-          gh pr edit "$PR" --remove-label codex-skipped 2>/dev/null || true
-          gh pr edit "$PR" --add-label codex-reviewing
-
       - name: Check out PR head
         if: steps.stack-check.outputs.skip != 'true' && steps.diff-check.outputs.skip != 'true'
         uses: actions/checkout@v6
@@ -142,14 +123,6 @@ jobs:
           bash .github/workflows/ci/post-codex-review.sh "${{ steps.pr-number.outputs.value }}" "${{ github.repository }}" \
             "${{ steps.context.outputs.head_sha }}" .codex-review/review.json
 
-      - name: Label PR as reviewed
-        if: always() && steps.post-review.outcome == 'success'
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          PR="${{ steps.pr-number.outputs.value }}"
-          gh pr edit "$PR" --remove-label codex-reviewing --add-label codex-reviewed
-
       - name: Handle review failure
         if: >-
           always() &&
@@ -159,6 +132,5 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           PR="${{ steps.pr-number.outputs.value }}"
-          gh pr edit "$PR" --remove-label codex-reviewing --add-label codex-failed
           LOGS_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
           gh pr comment "$PR" --body "⚠️ **Codex review failed** — see [workflow logs]($LOGS_URL) for details."

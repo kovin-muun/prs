@@ -60,25 +60,6 @@ jobs:
             echo "skip=false" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Label PR as skipped
-        if: steps.stack-check.outputs.skip == 'true' || steps.diff-check.outputs.skip == 'true'
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          PR="${{ steps.pr-number.outputs.value }}"
-          gh pr edit "$PR" --add-label claude-skipped
-
-      - name: Label PR as reviewing
-        if: steps.stack-check.outputs.skip != 'true' && steps.diff-check.outputs.skip != 'true'
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          PR="${{ steps.pr-number.outputs.value }}"
-          gh pr edit "$PR" --remove-label claude-reviewed 2>/dev/null || true
-          gh pr edit "$PR" --remove-label claude-failed 2>/dev/null || true
-          gh pr edit "$PR" --remove-label claude-skipped 2>/dev/null || true
-          gh pr edit "$PR" --add-label claude-reviewing
-
       - name: Compose review prompt
         id: review-prompt
         if: steps.stack-check.outputs.skip != 'true' && steps.diff-check.outputs.skip != 'true'
@@ -108,14 +89,6 @@ jobs:
           claude_args: |
             --model claude-opus-5-5 --max-budget-usd ${{ env.MAX_BUDGET_USD }} --append-system-prompt-file "${{ runner.temp }}/review-system.md" --allowedTools "mcp__github_inline_comment__create_inline_comment,Bash,Read,Glob,Grep"
 
-      - name: Label PR as reviewed
-        if: always() && steps.claude-review.outcome == 'success'
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          PR="${{ steps.pr-number.outputs.value }}"
-          gh pr edit "$PR" --remove-label claude-reviewing --add-label claude-reviewed
-
       - name: Handle review failure
         if: always() && steps.claude-review.outcome == 'failure'
         env:
@@ -124,8 +97,6 @@ jobs:
           MAX_BUDGET: ${{ env.MAX_BUDGET_USD }}
         run: |
           PR="${{ steps.pr-number.outputs.value }}"
-          gh pr edit "$PR" --remove-label claude-reviewing --add-label claude-failed
-
           LOGS_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
 
           if [ -n "$EXECUTION_FILE" ] && [ -f "$EXECUTION_FILE" ]; then

@@ -18,9 +18,7 @@ on:
 jobs:
   first-run:
     name: First run
-    if: >-
-      github.event_name == 'pull_request' &&
-      !contains(github.event.pull_request.labels.*.name, 'do-not-review')
+    if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     permissions:
       pull-requests: write
