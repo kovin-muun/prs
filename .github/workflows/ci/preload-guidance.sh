@@ -2,8 +2,8 @@
 # Detect languages in a PR and concatenate the matching review guidance files to stdout.
 # Called by the CI review workflow to pre-load guidance into the prompt.
 #
-# Language patterns here must stay in sync with the stack-check steps in claude-review.yml
-# and codex-review.yml, and Step 2 of muun-review.md.
+# Language patterns here must stay in sync with the stack-check step in muun-review.yml
+# and Step 2 of muun-review.md.
 set -euo pipefail
 
 PR="$1"

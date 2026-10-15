@@ -15,6 +15,9 @@ on:
   issue_comment:
     types: [created]
 
+env:
+  MAX_DIFF_LINES: 100000
+
 jobs:
   first-run:
     name: First run
@@ -29,7 +32,7 @@ jobs:
         run: |
           gh pr comment "${{ github.event.pull_request.number }}" \
             --repo "${{ github.repository }}" \
-            --body '🔍 **Claude and Codex will review this PR automatically.** To request a follow-up review after new pushes, comment `claude review`, `codex review`, or `muun review` for both.'
+            --body '🔍 **Claude will review this PR automatically.** To request a follow-up review after new pushes, comment `claude review`.'
 
   re-run:
     name: Re-run
@@ -72,11 +75,60 @@ jobs:
           gh api "repos/${{ github.repository }}/issues/comments/${{ github.event.comment.id }}/reactions" \
             -f content='+1'
 
-  claude:
-    name: Claude
+  checks:
+    name: Checks
     needs: [first-run, re-run]
     if: >-
       always() &&
+      (needs.first-run.result == 'success' || needs.re-run.result == 'success')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+    outputs:
+      pr_number: ${{ steps.pr-number.outputs.value }}
+      skip: ${{ steps.stack-check.outputs.skip == 'true' || steps.diff-check.outputs.skip == 'true' }}
+    env:
+      GH_REPO: ${{ github.repository }}
+    steps:
+      - name: Resolve PR number
+        id: pr-number
+        run: echo "value=${{ github.event.pull_request.number || github.event.issue.number || inputs.pr_number }}" >> "$GITHUB_OUTPUT"
+
+      - name: Check for supported tech stacks
+        id: stack-check
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          SUPPORTED_FILES=$(gh pr diff ${{ steps.pr-number.outputs.value }} --name-only | grep -cE '\.(java|kt|go|swift)$' || true)
+          if [ "$SUPPORTED_FILES" -eq 0 ]; then
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            echo "::notice::Skipping reviews — no files from a supported tech stack changed"
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Check diff size
+        id: diff-check
+        if: steps.stack-check.outputs.skip != 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          PR="${{ steps.pr-number.outputs.value }}"
+          DIFF_LINES=$(gh pr diff "$PR" | wc -l)
+          if [ "$DIFF_LINES" -gt "$MAX_DIFF_LINES" ]; then
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            echo "::warning::Skipping reviews — diff is $DIFF_LINES lines (limit: $MAX_DIFF_LINES)"
+            gh pr comment "$PR" --body "⚠️ **Review skipped** — this PR's diff is $DIFF_LINES lines, which exceeds the $MAX_DIFF_LINES-line limit. Please request a manual review."
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
+
+  claude:
+    name: Claude
+    needs: [first-run, re-run, checks]
+    if: >-
+      always() && needs.checks.result == 'success' &&
       (needs.first-run.result == 'success' || needs.re-run.outputs.claude == 'true')
     permissions:
       contents: read
@@ -84,22 +136,22 @@ jobs:
       id-token: write
     uses: ./.github/workflows/claude-review.yml
     with:
-      pr_number: ${{ github.event.pull_request.number || github.event.issue.number || inputs.pr_number }}
+      pr_number: ${{ needs.checks.outputs.pr_number }}
+      skip: ${{ needs.checks.outputs.skip == 'true' }}
     secrets:
       ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
 
   codex:
     name: Codex
     # Runs after the Claude review so Codex can read Claude's comments.
-    needs: [first-run, re-run, claude]
-    if: >-
-      always() &&
-      (needs.first-run.result == 'success' || needs.re-run.outputs.codex == 'true')
+    needs: [first-run, re-run, checks, claude]
+    if: always() && needs.checks.result == 'success' && needs.re-run.outputs.codex == 'true'
     permissions:
       contents: read
       pull-requests: write
     uses: ./.github/workflows/codex-review.yml
     with:
-      pr_number: ${{ github.event.pull_request.number || github.event.issue.number || inputs.pr_number }}
+      pr_number: ${{ needs.checks.outputs.pr_number }}
+      skip: ${{ needs.checks.outputs.skip == 'true' }}
     secrets:
       OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}

@@ -5,18 +5,19 @@ on:
       pr_number:
         required: true
         type: string
+      skip:
+        description: 'True when the PR has no supported files or its diff is too large'
+        required: true
+        type: boolean
     secrets:
       OPENAI_API_KEY:
         required: true
-
-env:
-  MAX_DIFF_LINES: 100000
 
 jobs:
   review:
     name: Run
     runs-on: ubuntu-latest
-    # Codex has no cost cap like --max-budget-usd; the timeout bounds a runaway review.
+    # Backstop for the whole job; the Codex step below has its own, shorter timeout.
     timeout-minutes: 30
     permissions:
       contents: read
@@ -32,37 +33,8 @@ jobs:
           fetch-depth: 1
           persist-credentials: false
 
-      - name: Check for supported tech stacks
-        id: stack-check
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          SUPPORTED_FILES=$(gh pr diff ${{ steps.pr-number.outputs.value }} --name-only | grep -cE '\.(java|kt|go|swift)$' || true)
-          if [ "$SUPPORTED_FILES" -eq 0 ]; then
-            echo "skip=true" >> "$GITHUB_OUTPUT"
-            echo "::notice::Skipping Codex review — no files from a supported tech stack changed"
-          else
-            echo "skip=false" >> "$GITHUB_OUTPUT"
-          fi
-
-      - name: Check diff size
-        id: diff-check
-        if: steps.stack-check.outputs.skip != 'true'
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          PR="${{ steps.pr-number.outputs.value }}"
-          DIFF_LINES=$(gh pr diff "$PR" | wc -l)
-          if [ "$DIFF_LINES" -gt "$MAX_DIFF_LINES" ]; then
-            echo "skip=true" >> "$GITHUB_OUTPUT"
-            echo "::warning::Skipping Codex review — diff is $DIFF_LINES lines (limit: $MAX_DIFF_LINES)"
-            gh pr comment "$PR" --body "⚠️ **Codex review skipped** — this PR's diff is $DIFF_LINES lines, which exceeds the $MAX_DIFF_LINES-line limit. Please request a manual review."
-          else
-            echo "skip=false" >> "$GITHUB_OUTPUT"
-          fi
-
       - name: Check out PR head
-        if: steps.stack-check.outputs.skip != 'true' && steps.diff-check.outputs.skip != 'true'
+        if: ${{ !inputs.skip }}
         uses: actions/checkout@v6
         with:
           ref: refs/pull/${{ steps.pr-number.outputs.value }}/head
@@ -74,7 +46,7 @@ jobs:
       # (see codex-prompt.md).
       - name: Gather PR context
         id: context
-        if: steps.stack-check.outputs.skip != 'true' && steps.diff-check.outputs.skip != 'true'
+        if: ${{ !inputs.skip }}
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -92,7 +64,7 @@ jobs:
           echo "head_sha=$(jq -r .headRefOid .codex-review/pr.json)" >> "$GITHUB_OUTPUT"
 
       - name: Compose review prompt
-        if: steps.stack-check.outputs.skip != 'true' && steps.diff-check.outputs.skip != 'true'
+        if: ${{ !inputs.skip }}
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -102,7 +74,10 @@ jobs:
 
       - uses: openai/codex-action@bdf19a4a223ec2549a3e2274a0cf61556bc07675 # v1.13
         id: codex-review
-        if: steps.stack-check.outputs.skip != 'true' && steps.diff-check.outputs.skip != 'true'
+        if: ${{ !inputs.skip }}
+        # Codex has no cost cap like --max-budget-usd. A timeout fails the step, so the
+        # failure step below still comments.
+        timeout-minutes: 5
         with:
           openai-api-key: ${{ secrets.OPENAI_API_KEY }}
           codex-version: 0.156.1

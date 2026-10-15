@@ -5,12 +5,15 @@ on:
       pr_number:
         required: true
         type: string
+      skip:
+        description: 'True when the PR has no supported files or its diff is too large'
+        required: true
+        type: boolean
     secrets:
       ANTHROPIC_API_KEY:
         required: true
 
 env:
-  MAX_DIFF_LINES: 100000
   MAX_BUDGET_USD: "3.00"
 
 jobs:
@@ -30,39 +33,9 @@ jobs:
         with:
           fetch-depth: 1
 
-      - name: Check for supported tech stacks
-        id: stack-check
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          SUPPORTED_FILES=$(gh pr diff ${{ steps.pr-number.outputs.value }} --name-only | grep -cE '\.(java|kt|go|swift)$' || true)
-          if [ "$SUPPORTED_FILES" -eq 0 ]; then
-            echo "skip=true" >> "$GITHUB_OUTPUT"
-            echo "::notice::Skipping Claude review — no files from a supported tech stack changed"
-          else
-            echo "skip=false" >> "$GITHUB_OUTPUT"
-          fi
-
-      - name: Check diff size
-        id: diff-check
-        if: steps.stack-check.outputs.skip != 'true'
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          PR="${{ steps.pr-number.outputs.value }}"
-          DIFF_LINES=$(gh pr diff "$PR" | wc -l)
-          echo "diff_lines=$DIFF_LINES" >> "$GITHUB_OUTPUT"
-          if [ "$DIFF_LINES" -gt "$MAX_DIFF_LINES" ]; then
-            echo "skip=true" >> "$GITHUB_OUTPUT"
-            echo "::warning::Skipping Claude review — diff is $DIFF_LINES lines (limit: $MAX_DIFF_LINES)"
-            gh pr comment "$PR" --body "⚠️ **Claude review skipped** — this PR's diff is $DIFF_LINES lines, which exceeds the $MAX_DIFF_LINES-line limit. Please request a manual review."
-          else
-            echo "skip=false" >> "$GITHUB_OUTPUT"
-          fi
-
       - name: Compose review prompt
         id: review-prompt
-        if: steps.stack-check.outputs.skip != 'true' && steps.diff-check.outputs.skip != 'true'
+        if: ${{ !inputs.skip }}
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -75,7 +48,7 @@ jobs:
 
       - uses: anthropics/claude-code-action@46a42b43239748e5b25771606bf1f551c3b1b517 # v1.0.232
         id: claude-review
-        if: steps.stack-check.outputs.skip != 'true' && steps.diff-check.outputs.skip != 'true'
+        if: ${{ !inputs.skip }}
         env:
           # Drop the git-status snapshot (branch, recent commits) from Claude
           # Code's system prompt — it is the only per-PR byte ahead of the
