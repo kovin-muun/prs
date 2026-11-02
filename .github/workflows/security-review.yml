@@ -3,6 +3,14 @@ on:
   pull_request:
     types: [opened, ready_for_review]
 
+env:
+  # The action pins Node 18, where npm installs Claude Code 2.1.197, which rejects current models.
+  # This workflow runs the action's scripts itself, with these versions.
+  ACTION_REPO: anthropics/claude-code-security-review
+  ACTION_SHA: 0c6a49f1fa56a1d472575da86a94dbc1edb78eda # main, 2026-02-11
+  CLAUDE_CODE_VERSION: 2.1.316
+  CLAUDE_MODEL: claude-opus-5-5
+
 jobs:
   review:
     name: Run
@@ -13,7 +21,7 @@ jobs:
       github.event.pull_request.user.login != 'dependabot[bot]' &&
       !contains(github.event.pull_request.labels.*.name, 'do-not-review')
     runs-on: ubuntu-latest
-    # The action has no cost cap like --max-budget-usd; its own timeout is 20 minutes.
+    # There is no cost cap like --max-budget-usd. Each scan attempt times out after 20 minutes.
     timeout-minutes: 30
     permissions:
       contents: read
@@ -36,39 +44,73 @@ jobs:
           sparse-checkout-cone-mode: false
           persist-credentials: false
 
-      - name: Move review config out of the checkout
+      - name: Check out the security review scripts
+        uses: actions/checkout@v6
+        with:
+          repository: ${{ env.ACTION_REPO }}
+          ref: ${{ env.ACTION_SHA }}
+          path: .security-review-action
+          persist-credentials: false
+
+      # Claude reviews the checkout, so keep the config and scripts out of it.
+      - name: Move review config and scripts out of the checkout
         run: |
           mv .security-review-config/.github/workflows/ci/security-review-*.md "$RUNNER_TEMP/"
+          mv .security-review-action "$RUNNER_TEMP/security-review-action"
           rm -rf .security-review-config
 
-      # The action posts findings.json and the check below reads claudecode-results.json, both from
-      # the checkout root. Remove any copy that the PR commits.
-      - name: Remove committed scan results
-        run: rm -f findings.json claudecode-results.json claudecode-error.log
-
-      # The action runs claude in the checkout, which would load the repo's developer settings:
-      # Bash allowlist, hooks and telemetry env. Nested directories hold skills that claude can
-      # also load.
+      # claude runs in the checkout, which would load the repo's developer settings: Bash
+      # allowlist, hooks and telemetry env. Nested directories hold skills that claude can also
+      # load.
       - name: Remove Claude Code project settings
         run: find . -name .claude -type d -prune -exec rm -rf {} +
 
-      - uses: anthropics/claude-code-security-review@0c6a49f1fa56a1d472575da86a94dbc1edb78eda # main, 2026-02-11
+      - uses: actions/setup-node@v7
         with:
-          claude-api-key: ${{ secrets.ANTHROPIC_API_KEY }}
-          claude-model: claude-opus-5-5
-          # Without this, the action skips any PR that already has a run marker, including a
-          # failed run and a GitHub job re-run.
-          run-every-commit: true
-          # Absolute paths: the action reads these files from its own directory.
-          custom-security-scan-instructions: ${{ runner.temp }}/security-review-instructions.md
-          false-positive-filtering-instructions: ${{ runner.temp }}/security-review-filter.md
+          node-version: 22
 
-      # The action only logs a warning when the scan fails. When it cannot parse Claude's output,
-      # it reports no findings with review_completed set to false.
-      - name: Fail on scan error
+      - name: Install dependencies
         run: |
+          npm install -g "@anthropic-ai/claude-code@$CLAUDE_CODE_VERSION"
+          python3 -m venv "$RUNNER_TEMP/venv"
+          "$RUNNER_TEMP/venv/bin/pip" install -q requests==2.34.2 anthropic==2.4.0
+
+      # The script exits with 1 when it finds a HIGH severity issue, so its exit code is not a
+      # failure signal. The next step checks the results instead.
+      - name: Run security scan
+        working-directory: ${{ runner.temp }}/security-review-action
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          ENABLE_CLAUDE_FILTERING: "true"
+          REPO_PATH: ${{ github.workspace }}
+          PYTHONPATH: ${{ runner.temp }}/security-review-action
+          CUSTOM_SECURITY_SCAN_INSTRUCTIONS: ${{ runner.temp }}/security-review-instructions.md
+          FALSE_POSITIVE_FILTERING_INSTRUCTIONS: ${{ runner.temp }}/security-review-filter.md
+        run: |
+          "$RUNNER_TEMP/venv/bin/python" -u claudecode/github_action_audit.py \
+            > "$RUNNER_TEMP/results.json" 2> "$RUNNER_TEMP/error.log" || true
+
+      # When the script cannot parse Claude's output, it reports no findings with review_completed
+      # set to false.
+      - name: Check scan results
+        run: |
+          jq . "$RUNNER_TEMP/results.json" || cat "$RUNNER_TEMP/results.json"
           if ! jq -e 'has("findings") and .analysis_summary.review_completed != false' \
-              claudecode-results.json > /dev/null 2>&1; then
-            echo "::error::Security scan failed. See the action's logs and the uploaded results."
+              "$RUNNER_TEMP/results.json" > /dev/null 2>&1; then
+            echo "::error::Security scan failed."
+            cat "$RUNNER_TEMP/error.log"
             exit 1
           fi
+
+      # The comment script reads findings.json from the working directory and the PR from the event
+      # payload. It skips the PR if it already has security comments.
+      - name: Post findings
+        working-directory: ${{ runner.temp }}
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          jq '.findings' results.json > findings.json
+          node security-review-action/scripts/comment-pr-findings.js
