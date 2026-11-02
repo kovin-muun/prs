@@ -1,0 +1,74 @@
+name: Security Review
+on:
+  pull_request:
+    types: [opened, ready_for_review]
+
+jobs:
+  review:
+    name: Run
+    # Fork and Dependabot PRs get no ANTHROPIC_API_KEY.
+    if: >-
+      !github.event.pull_request.draft &&
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      github.event.pull_request.user.login != 'dependabot[bot]' &&
+      !contains(github.event.pull_request.labels.*.name, 'do-not-review')
+    runs-on: ubuntu-latest
+    # The action has no cost cap like --max-budget-usd; its own timeout is 20 minutes.
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
+
+      # This workflow runs from the PR's merge commit, but a PR branch cut before it was added has
+      # no config files at its head. The default ref is the merge commit, which always has them.
+      - name: Check out review config
+        uses: actions/checkout@v6
+        with:
+          path: .security-review-config
+          sparse-checkout: |
+            .github/workflows/ci/security-review-instructions.md
+            .github/workflows/ci/security-review-filter.md
+          sparse-checkout-cone-mode: false
+          persist-credentials: false
+
+      - name: Move review config out of the checkout
+        run: |
+          mv .security-review-config/.github/workflows/ci/security-review-*.md "$RUNNER_TEMP/"
+          rm -rf .security-review-config
+
+      # The action posts findings.json and the check below reads claudecode-results.json, both from
+      # the checkout root. Remove any copy that the PR commits.
+      - name: Remove committed scan results
+        run: rm -f findings.json claudecode-results.json claudecode-error.log
+
+      # The action runs claude in the checkout, which would load the repo's developer settings:
+      # Bash allowlist, hooks and telemetry env. Nested directories hold skills that claude can
+      # also load.
+      - name: Remove Claude Code project settings
+        run: find . -name .claude -type d -prune -exec rm -rf {} +
+
+      - uses: anthropics/claude-code-security-review@0c6a49f1fa56a1d472575da86a94dbc1edb78eda # main, 2026-02-11
+        with:
+          claude-api-key: ${{ secrets.ANTHROPIC_API_KEY }}
+          claude-model: claude-opus-5-5
+          # Without this, the action skips any PR that already has a run marker, including a
+          # failed run and a GitHub job re-run.
+          run-every-commit: true
+          # Absolute paths: the action reads these files from its own directory.
+          custom-security-scan-instructions: ${{ runner.temp }}/security-review-instructions.md
+          false-positive-filtering-instructions: ${{ runner.temp }}/security-review-filter.md
+
+      # The action only logs a warning when the scan fails. When it cannot parse Claude's output,
+      # it reports no findings with review_completed set to false.
+      - name: Fail on scan error
+        run: |
+          if ! jq -e 'has("findings") and .analysis_summary.review_completed != false' \
+              claudecode-results.json > /dev/null 2>&1; then
+            echo "::error::Security scan failed. See the action's logs and the uploaded results."
+            exit 1
+          fi
