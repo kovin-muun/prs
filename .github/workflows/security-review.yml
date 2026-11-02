@@ -118,5 +118,9 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ github.token }}
         run: |
+          # Stop the script from adding 👍 and 👎 reactions to each comment.
+          sed -i "s/const reactions = \['+1', '-1'\];/const reactions = [];/" \
+            security-review-action/scripts/comment-pr-findings.js
+          grep -q "const reactions = \[\];" security-review-action/scripts/comment-pr-findings.js
           jq '.findings' results.json > findings.json
           node security-review-action/scripts/comment-pr-findings.js
