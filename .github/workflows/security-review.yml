@@ -90,6 +90,10 @@ jobs:
           CUSTOM_SECURITY_SCAN_INSTRUCTIONS: ${{ runner.temp }}/security-review-instructions.md
           FALSE_POSITIVE_FILTERING_INSTRUCTIONS: ${{ runner.temp }}/security-review-filter.md
         run: |
+          # The filter checks API access with a retired model, and turns itself off when that
+          # check fails.
+          sed -i 's/claude-3-5-haiku-20241022/claude-haiku-5-5/' claudecode/claude_api_client.py
+          grep -q '"claude-haiku-5-5"' claudecode/claude_api_client.py
           "$RUNNER_TEMP/venv/bin/python" -u claudecode/github_action_audit.py \
             > "$RUNNER_TEMP/results.json" 2> "$RUNNER_TEMP/error.log" || true
 
@@ -97,11 +101,13 @@ jobs:
       # set to false.
       - name: Check scan results
         run: |
+          echo "::group::Scan log"
+          cat "$RUNNER_TEMP/error.log"
+          echo "::endgroup::"
           jq . "$RUNNER_TEMP/results.json" || cat "$RUNNER_TEMP/results.json"
           if ! jq -e 'has("findings") and .analysis_summary.review_completed != false' \
               "$RUNNER_TEMP/results.json" > /dev/null 2>&1; then
             echo "::error::Security scan failed."
-            cat "$RUNNER_TEMP/error.log"
             exit 1
           fi
 
@@ -112,5 +118,9 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ github.token }}
         run: |
+          # Stop the script from adding 👍 and 👎 reactions to each comment.
+          sed -i "s/const reactions = \['+1', '-1'\];/const reactions = [];/" \
+            security-review-action/scripts/comment-pr-findings.js
+          grep -q "const reactions = \[\];" security-review-action/scripts/comment-pr-findings.js
           jq '.findings' results.json > findings.json
           node security-review-action/scripts/comment-pr-findings.js
