@@ -4,19 +4,22 @@ on:
     types: [opened, ready_for_review]
 
 env:
-  # The action pins Node 18, where npm installs Claude Code 2.1.197, which rejects current models.
-  # This workflow runs the action's scripts itself, with these versions.
-  ACTION_REPO: anthropics/claude-code-security-review
-  ACTION_SHA: 0c6a49f1fa56a1d472575da86a94dbc1edb78eda # main, 2026-02-11
+  # The upstream action pins Node 18, where npm installs Claude Code 2.1.197, which rejects current
+  # models. This workflow runs a copy of its scripts, in .github/security-review, with these
+  # versions.
   CLAUDE_CODE_VERSION: 2.1.316
   CLAUDE_MODEL: claude-opus-5-5
+  # Cost cap for the Claude Code scan. The filter's per-finding API calls are not included.
+  MAX_BUDGET_USD: "10.00"
 
 jobs:
   review:
     name: Run
-    # Fork and Dependabot PRs get no ANTHROPIC_API_KEY.
+    # Fork and Dependabot PRs get no ANTHROPIC_API_KEY. GitHub's diff API, which the scan needs,
+    # rejects PRs with more than 300 changed files.
     if: >-
       !github.event.pull_request.draft &&
+      github.event.pull_request.changed_files <= 300 &&
       github.event.pull_request.head.repo.full_name == github.repository &&
       github.event.pull_request.user.login != 'dependabot[bot]' &&
       !contains(github.event.pull_request.labels.*.name, 'do-not-review')
@@ -33,30 +36,24 @@ jobs:
           persist-credentials: false
 
       # This workflow runs from the PR's merge commit, but a PR branch cut before it was added has
-      # no config files at its head. The default ref is the merge commit, which always has them.
-      - name: Check out review config
+      # no config files or scripts at its head. The default ref is the merge commit, which always
+      # has them.
+      - name: Check out review config and scripts
         uses: actions/checkout@v6
         with:
           path: .security-review-config
           sparse-checkout: |
             .github/workflows/ci/security-review-instructions.md
             .github/workflows/ci/security-review-filter.md
+            .github/security-review/
           sparse-checkout-cone-mode: false
-          persist-credentials: false
-
-      - name: Check out the security review scripts
-        uses: actions/checkout@v6
-        with:
-          repository: ${{ env.ACTION_REPO }}
-          ref: ${{ env.ACTION_SHA }}
-          path: .security-review-action
           persist-credentials: false
 
       # Claude reviews the checkout, so keep the config and scripts out of it.
       - name: Move review config and scripts out of the checkout
         run: |
           mv .security-review-config/.github/workflows/ci/security-review-*.md "$RUNNER_TEMP/"
-          mv .security-review-action "$RUNNER_TEMP/security-review-action"
+          mv .security-review-config/.github/security-review "$RUNNER_TEMP/security-review"
           rm -rf .security-review-config
 
       # claude runs in the checkout, which would load the repo's developer settings: Bash
@@ -78,7 +75,7 @@ jobs:
       # The script exits with 1 when it finds a HIGH severity issue, so its exit code is not a
       # failure signal. The next step checks the results instead.
       - name: Run security scan
-        working-directory: ${{ runner.temp }}/security-review-action
+        working-directory: ${{ runner.temp }}/security-review
         env:
           GITHUB_TOKEN: ${{ github.token }}
           GITHUB_REPOSITORY: ${{ github.repository }}
@@ -86,14 +83,10 @@ jobs:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           ENABLE_CLAUDE_FILTERING: "true"
           REPO_PATH: ${{ github.workspace }}
-          PYTHONPATH: ${{ runner.temp }}/security-review-action
+          PYTHONPATH: ${{ runner.temp }}/security-review
           CUSTOM_SECURITY_SCAN_INSTRUCTIONS: ${{ runner.temp }}/security-review-instructions.md
           FALSE_POSITIVE_FILTERING_INSTRUCTIONS: ${{ runner.temp }}/security-review-filter.md
         run: |
-          # The filter checks API access with a retired model, and turns itself off when that
-          # check fails.
-          sed -i 's/claude-3-5-haiku-20241022/claude-haiku-5-5/' claudecode/claude_api_client.py
-          grep -q '"claude-haiku-5-5"' claudecode/claude_api_client.py
           "$RUNNER_TEMP/venv/bin/python" -u claudecode/github_action_audit.py \
             > "$RUNNER_TEMP/results.json" 2> "$RUNNER_TEMP/error.log" || true
 
@@ -118,9 +111,5 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ github.token }}
         run: |
-          # Stop the script from adding 👍 and 👎 reactions to each comment.
-          sed -i "s/const reactions = \['+1', '-1'\];/const reactions = [];/" \
-            security-review-action/scripts/comment-pr-findings.js
-          grep -q "const reactions = \[\];" security-review-action/scripts/comment-pr-findings.js
           jq '.findings' results.json > findings.json
-          node security-review-action/scripts/comment-pr-findings.js
+          node security-review/scripts/comment-pr-findings.js
